@@ -42,24 +42,9 @@ Follow these phases in strict order (0, 1, 2, 3, 3.5, 4, 5). **Do not advance to
 
 This skill behaves like `/spec-impl`, with one structural difference: instead of creating a branch and switching the *current* checkout to it, it creates a **git worktree** — a separate working directory with its own checkout of the new branch — under `.trees/` at the repository root, and moves the session into that worktree. Your original checkout is left completely untouched.
 
-It is designed so that **two or more agents can run this skill at the same time**, each on a different spec, without affecting each other. Git only isolates *tracked files*; everything else a project needs at runtime is shared global state unless the skill isolates it:
+It is designed so that **two or more agents can run this skill at the same time**, each on a different spec, without affecting each other. Git only isolates *tracked files*; everything else a project needs at runtime is isolated by `scripts/bootstrap.mjs`: ignored files (`.env`, `node_modules/`) are copied/cloned in, the TCP port is allocated atomically in `.trees/registry.json`, and each worktree gets its own database via the project's own driver (no `psql`/docker needed). Infrastructure containers are **not** duplicated — shared, started only from the primary checkout.
 
-| Shared resource | How it is isolated |
-|---|---|
-| Ignored files (`.env`, `node_modules/`) | Copied / cloned into the worktree by `scripts/bootstrap.mjs` |
-| TCP port | Each worktree gets its own, allocated atomically in `.trees/registry.json` |
-| Database | Each worktree gets its own database, created with the project's own driver (no `psql`/docker needed) |
-| Infrastructure containers | **Not** duplicated: shared, started only from the primary checkout |
-
-**It works on any Node project (TypeScript or JavaScript) and on any OS.** The scripts are plain Node (`.mjs`), with no dependency on `bash`, `jq`, `flock`, `sed` or any Unix tool, so they behave the same in cmd, PowerShell, Git Bash, WSL, macOS and Linux. Everything project-specific is **autodetected**, not configured:
-
-| What | Detected from |
-|---|---|
-| Package manager | lockfile: `package-lock.json` → npm, `pnpm-lock.yaml` → pnpm, `yarn.lock` → yarn, `bun.lockb` → bun |
-| Files to copy | git-ignored `.env*` files (templates like `.env.example` excluded) |
-| Port variable | first of `APP_PORT`, `PORT`, `SERVER_PORT`, `HTTP_PORT` present in `.env` |
-| Database | a URL var (`DATABASE_URL`, `MONGODB_URI`…) or loose vars (`DB_NAME`, `PGDATABASE`…); engine from the URL scheme or the installed driver (`pg`, `mysql2`, `mongodb`, `better-sqlite3`) |
-| Verification | `package.json` scripts `test`, `lint`, `typecheck`; `tsc --noEmit` only if `typescript` is a dependency and a `tsconfig.json` exists |
+**It works on any Node project (TypeScript or JavaScript) and on any OS** — the scripts are plain Node (`.mjs`), no dependency on `bash`/`jq`/`flock`/`sed`. Everything project-specific is **autodetected**: package manager from the lockfile (npm/pnpm/yarn/bun), env files to copy from what's git-ignored (`.env*`, templates like `.env.example` excluded; if the main one isn't literally `.env`, Phase 3.5 asks and records it), the port variable (`APP_PORT`/`PORT`/`SERVER_PORT`/`HTTP_PORT`), the database (a URL var like `DATABASE_URL` or loose vars like `DB_NAME`; engine from the URL scheme or the installed driver), and verification steps from `package.json` scripts (`test`, `lint`, `typecheck`).
 
 `.claude/worktree.json` is **optional** and only holds what cannot be detected: `copy` (extra files), `portVars`, `envFile`, `db` (`{engine, urlVar, nameVar, pgBin, skip}`: override detection, point to the PostgreSQL client folder on Windows, or `skip` provisioning), and `setup[]` / `teardown[]` (extra shell steps, e.g. Redis). On a new machine or project, run `/worktree-doctor` first: it reports what will work and what will not, before anything is created.
 
@@ -133,16 +118,7 @@ Treat any of the following (and their equivalents in other languages) as the **A
 - Italian: `Approvato`
 - …or any other language's word that clearly means "approved"
 
-Anything else (Draft / Borrador, In review / En revisión, Implemented / Implementado, Obsolete / Obsoleto, or any unrecognized value) means **stop** and show the error message below.
-
-| State category                            | Examples (any language)                           | Action                                                                     |
-| ----------------------------------------- | ------------------------------------------------- | -------------------------------------------------------------------------- |
-| Approved                                  | `Approved`, `Aprobado`, `Aprovado`, `Approuvé`, … | Continue to Phase 3.                                                       |
-| Draft                                     | `Draft`, `Borrador`, …                            | Stop. Show the error message below.                                        |
-| In review                                 | `In review`, `En revisión`, …                     | Stop. Show the error message below.                                        |
-| Implemented                               | `Implemented`, `Implementado`, …                  | Stop. Show the error message below.                                        |
-| Obsolete                                  | `Obsolete`, `Obsoleto`, …                         | Stop. Show the error message below.                                        |
-| State line not found / unrecognized value | —                                                 | Stop. The file does not follow the expected format. Tell this to the user. |
+Anything else — Draft/Borrador, In review/En revisión, Implemented/Implementado, Obsolete/Obsoleto, a state line not found, or any unrecognized value — means **stop** and show the error message below.
 
 If you are unsure whether a value means "approved", **do not assume**. Stop and ask the user to clarify or to update the spec to the canonical wording.
 
@@ -221,17 +197,24 @@ A fresh worktree only contains tracked files. It has no `node_modules/`, no `.en
    ```
 
    It is idempotent, so it is safe to re-run on a resumed worktree. It:
-   - validates and records the base branch in the registry: the branch must exist locally, be a valid name, and be an ancestor of the worktree (a worktree created from another branch is rejected). Once recorded it cannot be changed by passing a different `--base`;
+   - validates and records the base branch in the registry (once recorded it cannot be changed by passing a different `--base`);
    - copies the git-ignored `.env*` files (plus any `copy[]` in `worktree.json`) without overwriting existing ones;
-   - installs dependencies: with npm, `node_modules` is cloned from the primary checkout with hardlinks (~1 s, no extra disk; symlinks that the OS refuses are copied instead), falling back to `npm ci` when the lockfile differs or hardlinks are unsupported; with pnpm/yarn/bun it runs the manager's own install;
+   - installs dependencies (hardlinked from the primary checkout's `node_modules` when possible, otherwise a normal install with the detected package manager);
    - allocates a free port under a lock in `.trees/registry.json` and rewrites it into the worktree's `.env`;
-   - gives the worktree **its own exact copy (schema and data) of the database named in the `.env`**, with no migrations involved. The database is never left empty and never left shared: either the copy succeeds or the bootstrap fails. On Postgres it uses `CREATE DATABASE … TEMPLATE <base>` (about a second); if the base has open connections (typically a dev server) Postgres refuses that, so it falls back to `pg_dump | psql`, which reads a consistent snapshot without disconnecting anyone. MySQL and MongoDB are copied table by table / collection by collection through the project's driver, and SQLite by copying the file. **The MySQL and MongoDB copy has only been exercised against simulated drivers, never a real server**; mention that if the user relies on it. A project with no database gets nothing provisioned, and that is not an error;
+   - gives the worktree **its own exact copy (schema and data) of the database named in the `.env`** — never empty, never shared: either the copy succeeds or the bootstrap fails. It picks the fastest method the engine allows (e.g. Postgres `TEMPLATE`, falling back to `pg_dump | psql` if the base has open connections); a project with no database gets nothing provisioned, which is not an error;
    - runs the project's `setup[]` steps, if any;
    - prints a JSON on stdout with `base`, `port`, `db`, `dbMethod` (`template` | `dump` | `copy` | `existing` | `none`), `dbWarnings`, `install` and `packageManager`.
 
-   The copy is a **snapshot taken at bootstrap time**. If another spec later lands a migration on the base branch, this worktree's database does not have it: Phase 5 covers that.
+   The copy is a **snapshot taken at bootstrap time**. If another spec later lands a migration on the base branch, this worktree's database does not have it: Phase 5 covers that. If `dbMethod` is `copy` (MySQL/MongoDB), mention to the user that this path is less battle-tested than the Postgres one.
 
-   **Exit code 3 is not a failure.** It means the database in the `.env` is **remote** (not localhost) and the user must decide, before anything was created. stdout is `{"status":"needs-confirmation","reason":"remote-db","host":…,"engine":…,"database":…}`. Ask the user with `AskUserQuestion`: *"The database in the .env is remote (`<host>`). Cloning it copies its real data into another database on the same server, with cost and possibly sensitive data. Continue?"* If **yes**, re-run the same command adding `--confirm-remote`. If **no**, stop and offer to undo the worktree (`node ${CLAUDE_SKILL_DIR}/scripts/teardown.mjs spec-NN-slug`, from the primary checkout); do **not** offer to carry on without isolation, because the worktree's `.env` would still point at the shared database. Never add `--confirm-remote` on your own.
+   **Exit code 3 is not a failure.** It means the user must decide something before anything was created, and stdout tells you which case (`reason`):
+
+   - **`remote-db`**: the database in the `.env` is **remote** (not localhost). stdout is `{"status":"needs-confirmation","reason":"remote-db","host":…,"engine":…,"database":…}`. Ask the user with `AskUserQuestion`: *"The database in the .env is remote (`<host>`). Cloning it copies its real data into another database on the same server, with cost and possibly sensitive data. Continue?"* If **yes**, re-run the same command adding `--confirm-remote`. If **no**, stop and offer to undo the worktree (`node ${CLAUDE_SKILL_DIR}/scripts/teardown.mjs spec-NN-slug`, from the primary checkout); do **not** offer to carry on without isolation, because the worktree's `.env` would still point at the shared database. Never add `--confirm-remote` on your own.
+
+   - **`no-env-file`**: the project has no `.env` at the repository root. stdout is `{"status":"needs-confirmation","reason":"no-env-file","expected":".env","candidates":[...]}`. Without the real file name, port and database detection silently read an empty map and the worktree ends up sharing the primary checkout's port and database. Never let that pass unnoticed. Ask the user with `AskUserQuestion` which file it really is, offering `candidates` (files found that look like an env file and are git-ignored) plus a free-text option for another name.
+
+     - If they name a file: write `{"envFile": "<name>"}` into `.claude/worktree.json` **in the primary checkout**, merging with whatever is already there (create the file if it does not exist) — this is required, not optional: `db.mjs`, `doctor.mjs` and especially `teardown.mjs` all read `config.envFile` independently later, and without this entry `teardown.mjs` would not know which database to drop. Then re-run the same bootstrap command adding `--env-file <name>`.
+     - If they say the project truly has no env file: say plainly that the worktree will have **no port and no database of its own** and will share the primary checkout's, and ask for explicit confirmation before continuing that way. If they decline, offer to undo the worktree with `teardown.mjs` as above.
 
    If it exits with any other non-zero code, **stop**, show the error to the user and do not continue. The messages say what to do. The usual causes are a database server that is not running (start it from the **primary checkout**, never from the worktree), a database user without `CREATEDB`, or, on Postgres with the base in use, a missing `pg_dump`/`psql` client.
 
@@ -263,6 +246,20 @@ A fresh worktree only contains tracked files. It has no `node_modules/`, no `.en
    - The **acceptance criteria** (the checklist — `## Acceptance criteria` / `## Criterios de aceptación` / equivalent).
 
 Match section headings by meaning, not by exact wording — the spec may be authored in any language.
+
+---
+
+### Commit rule (applies to every `git commit` from here on)
+
+**Never run `git commit` with a message you have not shown first.** Before each commit:
+
+1. Summarize in one line what goes into the commit — files and intent, read from the actual diff, not from the plan.
+2. Propose a message in **Conventional Commits, in English** (`feat(scope): …`, `fix`, `refactor`, `chore`, `test`, `docs`). Subject ≤ 72 characters, imperative mood, no trailing period. A body only when the *why* is not obvious from the subject.
+3. Present it with `AskUserQuestion`: **"Use this message" / "Edit it" / "I'll write my own"**.
+4. Wait for the answer. Do not commit without it.
+5. For the integration commit in Phase 5, the default subject is `chore(merge): integrate <base> into spec-NN-slug`.
+
+Messages still carry whatever attribution lines this environment already appends. Never `push`, never `--no-verify`.
 
 ---
 
@@ -320,7 +317,8 @@ Once confirmed, follow these rules during the entire implementation:
 
 Next step: verify the spec's acceptance criteria one by one.
 If they all pass, update the spec's state to "Implemented" (or the equivalent
-in your repo's language) and commit. Then I integrate the base branch (<base>) into
+in your repo's language) and commit (see the commit rule above — I will show you
+the message first). Then I integrate the base branch (<base>) into
 this branch (Phase 5).
 ```
 
@@ -342,13 +340,13 @@ node ${CLAUDE_SKILL_DIR}/scripts/base.mjs spec-NN-slug
 
 **Why the direction matters:** the base branch is checked out in the primary checkout, and git refuses to check out the same branch in two worktrees. From here you **cannot** merge into the base; you can only bring the base *into* your branch. That is the right place anyway: conflicts are resolved where the context is, with this worktree's own database and port to verify against, so what finally reaches the base is already integrated and green.
 
-1. Make sure the working tree is clean (`git status --short`). Commit or stash anything pending.
+1. Make sure the working tree is clean (`git status --short`). Commit (per the commit rule above) or stash anything pending.
 2. `git fetch`, then run `base.mjs` again and look at `originAhead`. If it is greater than `0`, `origin/<base>` has commits that the **local** `<base>` does not: tell the user and suggest running `git pull` on `<base>` in the primary checkout first, then repeating this phase. **Do not merge the remote branch yourself**: the final fast-forward lands on the local base, so merging `origin/<base>` would drag remote commits into the user's local branch without them having pulled.
 3. `git merge <base>` (the **local** branch). Use **merge, not rebase**: it keeps the step-by-step history the user reviewed in Phase 4 and does not rewrite commits.
 4. If there are conflicts, follow `${CLAUDE_SKILL_DIR}/reference/conflicts.md`. In short: never resolve a lockfile by hand, keep both sides of composition roots, check migration ordering, and for a real semantic conflict (both specs change the same rule incompatibly) **stop and present two or three options** — do not decide alone.
 5. If the merge changed `package.json` / the lockfile, reinstall with the project's package manager (`npm ci`, `pnpm install`, `yarn install` or `bun install`; bootstrap skips installing when `node_modules` already exists, so re-running it does not help). If the base added migrations, re-run them against this worktree's database. If the base added a required env var, add it to this worktree's `.env` by hand: it is gitignored and never updates itself.
 6. Verify the integrated result, not just that it merged: `node ${CLAUDE_SKILL_DIR}/scripts/verify.mjs` (the project's own `test`, `lint` and `typecheck`), and then the flow against the real server on this worktree's own port. A conflict-free merge can still be semantically broken.
-7. Commit the merge if git did not, then run `base.mjs` one last time and check that `containsBase` is `true`.
+7. Commit the merge if git did not (e.g. after resolving conflicts by hand — follow the commit rule above; git's own default merge message is fine as the proposed one), then run `base.mjs` one last time and check that `containsBase` is `true`.
 
 Finish with:
 
@@ -364,34 +362,4 @@ Nothing is pushed. If another spec lands on <base> first, come back here and rep
 
 Do not try to merge into the base from the worktree, and do not remove the worktree, its database or its registry entry yourself — `/worktree-merge` does that.
 
----
-
-## Summary of expected behavior
-
-```
-/worktree-spec-impl 01-mvp-arkanoid            (active branch: develop)
-/worktree-spec-impl 02-powerups --base develop (created from develop even if another branch is active)
-
-  Phase 1  →  Finds specs/01-mvp-arkanoid.md; base = develop
-  Phase 0  →  Warns if another in-progress spec WITH THE SAME BASE claims the same files
-  Phase 2  →  Reads the state → "Approved" (or "Aprobado", etc.) → ✅ continues
-  Phase 3  →  mkdir -p .trees (if missing)
-              git worktree add .trees/spec-01-mvp-arkanoid -b spec-01-mvp-arkanoid develop
-              EnterWorktree path: .trees/spec-01-mvp-arkanoid
-  Phase 3.5→  bootstrap.mjs … --base develop: records the base, copy .env, node_modules,
-              own port + own database
-              verify.mjs green as baseline
-              Shows objective, scope, plan and criteria
-  Phase 4  →  Implements step by step with pauses, inside the worktree
-  Phase 5  →  git merge develop (local) into the branch, resolves conflicts, checks green
-              Tells the user to run /worktree-merge from the primary checkout, on develop
-
-/worktree-spec-impl 02-powerups  (state: Draft / Borrador)
-
-  Phase 1  →  Finds specs/02-powerups.md
-  Phase 2  →  Reads the state → "Draft" → ❌ stops
-              Shows the standard error message
-              Does not create a worktree, does not touch code
-```
-
-**Worktree creation is controlled by the `AutoCreateBranch` flag** in `specs/.spec-config.yml` (same flag `/spec-impl` uses). It defaults to `true` (create `.trees/spec-NN-slug` and switch into it automatically, as shown above). Set it to `false` to make Phase 3 ask `[y/N]` before creating the worktree.
+**Worktree creation is controlled by the `AutoCreateBranch` flag** in `specs/.spec-config.yml` (same flag `/spec-impl` uses). It defaults to `true` (create `.trees/spec-NN-slug` and switch into it automatically). Set it to `false` to make Phase 3 ask `[y/N]` before creating the worktree.

@@ -3,7 +3,7 @@ name: worktree-merge
 description: Closes a spec implemented with /worktree-spec-impl. Run from the primary checkout, on the spec's base branch (develop, a task branch, main…). Verifies the branch already contains its base and is clean, fast-forwards the base to it, runs the checks, and cleans up the worktree, its database and its port. Integrates one branch at a time. Never pushes.
 disable-model-invocation: true
 argument-hint: <NN-spec-name>
-allowed-tools: Bash(git status:*), Bash(git branch:*), Bash(git worktree:*), Bash(git rev-parse:*), Bash(git merge:*), Bash(git log:*), Bash(git merge-base:*), Bash(cat:*), Bash(ls:*), Bash(node ${CLAUDE_SKILL_DIR}/../worktree-spec-impl/scripts/*:*)
+allowed-tools: Bash(git status:*), Bash(git branch:*), Bash(git worktree:*), Bash(git rev-parse:*), Bash(git merge:*), Bash(git commit:*), Bash(git log:*), Bash(git merge-base:*), Bash(cat:*), Bash(ls:*), Bash(node ${CLAUDE_SKILL_DIR}/../worktree-spec-impl/scripts/*:*)
 ---
 
 # /worktree-merge — Land a worktree branch on its base branch and clean up
@@ -89,13 +89,42 @@ Use `containsBase` from step 1 (it is `git merge-base --is-ancestor <base> spec-
 
 ### 4. Land it
 
+Ask the user how to land it, with `AskUserQuestion`:
+
 ```
-git merge --ff-only spec-NN-slug
+How do I land spec-NN-slug on <base>?
+  1) --ff-only   (default — step-by-step history, no merge commit)
+  2) --no-ff     (an explicit merge commit)
+  3) --squash    (every commit of the spec collapsed into one on top of <base>)
 ```
 
-This runs in the primary checkout, which is on `<base>`. `--ff-only` is the point: step 3 guarantees it is possible, and if it is not, something changed between the check and now — fail loudly instead of creating a surprise merge commit. If the user's history policy prefers a merge commit, ask first; do not choose for them.
+Step 3 already guarantees `containsBase` is `true` in all three cases, so none of them can lose anything from the base.
 
-If `originAhead` was greater than `0`, mention it: `origin/<base>` has commits the local base did not, so a later `git push` will need a pull or rebase. Do not fetch, pull or push for the user.
+- **`--ff-only`** (default):
+
+  ```
+  git merge --ff-only spec-NN-slug
+  ```
+
+  This runs in the primary checkout, which is on `<base>`. `--ff-only` is the point: it is guaranteed possible by step 3, and if it is not, something changed between the check and now — fail loudly instead of creating a surprise merge commit.
+
+- **`--no-ff`**:
+
+  ```
+  git merge --no-ff spec-NN-slug
+  ```
+
+  Follow the commit rule from `/worktree-spec-impl` (show the proposed message, in Conventional Commits/English, before committing — `git merge --no-ff` opens the message for you, so propose it as the default and let the user accept, edit, or replace it).
+
+- **`--squash`**:
+
+  ```
+  git merge --squash spec-NN-slug
+  ```
+
+  This stages everything but does **not** commit. Follow the commit rule from `/worktree-spec-impl`: propose a message (default `feat(spec-NN): <the spec's objective line>`, read from `specs/NN-slug.md`), then `git commit` with what the user approves.
+
+If `originAhead` was greater than `0`, mention it in any case: `origin/<base>` has commits the local base did not, so a later `git push` will need a pull or rebase. Do not fetch, pull or push for the user.
 
 ### 5. Last safety net on the base
 
@@ -116,6 +145,15 @@ git branch -d spec-NN-slug
 ```
 
 `-d`, not `-D`: git refuses if the branch is not fully merged, which is the safety we want. If it refuses, report it and do not force.
+
+**Exception — after `--squash` in step 4:** git never records the branch as merged for a squash (there is no merge commit pointing at it), so `git branch -d` will always refuse even though the content is safely on `<base>`. This is the **only** case where you force-delete, and only after explaining it and getting an explicit yes:
+
+```
+The content of spec-NN-slug is on <base> as commit <sha> (squashed). Delete the branch
+with git branch -D spec-NN-slug? [y/N]
+```
+
+Only on an explicit yes: `git branch -D spec-NN-slug`. With `--ff-only` or `--no-ff`, never force — use plain `-d` as above.
 
 ### 7. Report and chain
 

@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Uso: node bootstrap.mjs <worktree-path> <slug> [--base <rama>] [--confirm-remote]
+// Uso: node bootstrap.mjs <worktree-path> <slug> [--base <rama>] [--env-file <nombre>] [--confirm-remote]
 // Deja un worktree recién creado ejecutable y aislado de los demás: ficheros ignorados,
 // dependencias, puerto propio, copia exacta de la BD del .env y pasos de proyecto.
 // Idempotente. Solo escribe JSON a stdout; el log va a stderr.
@@ -8,7 +8,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { createDb, inspectDb } from './db.mjs';
 import {
-  detectEnvFiles, detectPackageManager, detectPortVars, installCommand,
+  detectEnvFiles, detectPackageManager, detectPortVars, findEnvCandidates, installCommand,
   loadConfig, loadProjectEnv, readPkg, swapDb,
 } from './lib/detect.mjs';
 import { git, HardlinkUnsupported, linkTree, log, rmWithRetry, runShell, setEnvVar } from './lib/fsx.mjs';
@@ -16,12 +16,14 @@ import * as registry from './lib/registry.mjs';
 
 let confirmRemote = false;
 let explicitBase;
+let explicitEnvFile;
 const positional = [];
 const rawArgs = process.argv.slice(2);
 for (let i = 0; i < rawArgs.length; i++) {
   const arg = rawArgs[i];
   if (arg === '--confirm-remote') confirmRemote = true;
   else if (arg === '--base') explicitBase = rawArgs[++i];
+  else if (arg === '--env-file') explicitEnvFile = rawArgs[++i];
   else if (arg.startsWith('--')) {
     console.error(`Opción desconocida: ${arg}`);
     process.exit(2);
@@ -29,19 +31,34 @@ for (let i = 0; i < rawArgs.length; i++) {
 }
 const [worktreeArg, slug] = positional;
 if (!worktreeArg || !slug) {
-  console.error('Uso: bootstrap.mjs <worktree-path> <slug> [--base <rama>] [--confirm-remote]');
+  console.error('Uso: bootstrap.mjs <worktree-path> <slug> [--base <rama>] [--env-file <nombre>] [--confirm-remote]');
   process.exit(2);
 }
 
 const worktree = path.resolve(worktreeArg);
 const root = registry.mainRoot();
 const config = loadConfig(root);
-const envFile = config.envFile ?? '.env';
+const envFile = explicitEnvFile ?? config.envFile ?? '.env';
 const wtEnv = path.join(worktree, envFile);
 
 function fail(message) {
   log(`[bootstrap] ERROR: ${message}`);
   process.exit(1);
+}
+
+// ── 0. Preflight: ¿existe el fichero de entorno? ────────────────────────────
+// Sin él, detectPortVars/detectDb leen un mapa vacío y el worktree se quedaría compartiendo
+// puerto y BD con el resto en silencio. Se decide ANTES de tocar nada, igual que la BD remota.
+if (!fs.existsSync(path.join(root, envFile))) {
+  console.log(
+    JSON.stringify({
+      status: 'needs-confirmation',
+      reason: 'no-env-file',
+      expected: envFile,
+      candidates: findEnvCandidates(root),
+    }),
+  );
+  process.exit(3);
 }
 
 // ── 0a. Rama base ───────────────────────────────────────────────────────────

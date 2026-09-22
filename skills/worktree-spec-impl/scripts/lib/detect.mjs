@@ -77,6 +77,18 @@ export function detectEnvFiles(root) {
     .filter((name) => git(['check-ignore', '-q', name], { cwd: root }).status === 0);
 }
 
+// Candidatos a "el .env principal" cuando ese nombre exacto no existe: cualquier fichero
+// ignorado por git con pinta de fichero de entorno (.env.local, env.local, app.env...),
+// para preguntarle al usuario en vez de asumir en silencio que no hay ninguno.
+const ENV_LIKE = /(^\.?env\.|\.env$|^\.env$)/i;
+
+export function findEnvCandidates(root) {
+  return fs
+    .readdirSync(root)
+    .filter((name) => ENV_LIKE.test(name) && !ENV_TEMPLATE.test(name))
+    .filter((name) => git(['check-ignore', '-q', name], { cwd: root }).status === 0);
+}
+
 // ── Base de datos ───────────────────────────────────────────────────────────
 const URL_VARS = ['DATABASE_URL', 'POSTGRES_URL', 'POSTGRESQL_URL', 'PG_URL', 'MYSQL_URL', 'MONGO_URL', 'MONGODB_URI', 'MONGODB_URL'];
 const FIELD_VARS = {

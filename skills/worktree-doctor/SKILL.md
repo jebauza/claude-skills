@@ -26,6 +26,7 @@ Then explain, in one or two sentences each, only the `⚠` and `✗` lines, with
 | Line | Fix |
 |---|---|
 | `.trees/ NO está en .gitignore` | Add `.trees/` to `.gitignore`. A worktree directory must never be committed into the primary checkout. |
+| `no existe ".env"` (or whatever `envFile` is configured to) | The project uses a different name (`.env.local`, `app.env`…). Either add `"envFile": "<name>"` to `.claude/worktree.json` yourself, or just run `/worktree-spec-impl`: it will ask you for the real name and save it there. Without this, port and database detection silently read nothing and the worktree ends up sharing the primary checkout's. |
 | `rama base por defecto: "<rama>"` | Informational. It is the branch active in the primary checkout, the one `/worktree-spec-impl` creates worktrees from and lands them on. Use `--base <branch>` to pick another local branch. |
 | `HEAD desacoplado en el checkout principal` | There is no active branch to use as the base. Either `git switch <branch>` or always pass `--base <branch>`. |
 | `el repo no tiene commits` | Make an initial commit: a worktree needs a commit to branch from. |

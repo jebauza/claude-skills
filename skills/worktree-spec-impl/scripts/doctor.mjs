@@ -8,7 +8,7 @@ import path from 'node:path';
 import { findPgTools, inspectDb } from './db.mjs';
 import {
   cloneName, detectEnvFiles, detectPackageManager, detectPortVars, detectVerify,
-  loadConfig, loadDriver, loadProjectEnv, readPkg, swapDb,
+  findEnvCandidates, loadConfig, loadDriver, loadProjectEnv, readPkg, swapDb,
 } from './lib/detect.mjs';
 import { git } from './lib/fsx.mjs';
 import * as registry from './lib/registry.mjs';
@@ -81,6 +81,15 @@ if (!pkg) {
 
 const envFiles = detectEnvFiles(root);
 envFiles.length ? ok(`ficheros de entorno a copiar: ${envFiles.join(', ')}`) : warn('no hay ficheros .env ignorados por git que copiar');
+
+if (!fs.existsSync(path.join(root, envFile))) {
+  const candidates = findEnvCandidates(root);
+  bad(
+    candidates.length
+      ? `no existe "${envFile}": puerto y BD no se detectarán. ¿Es alguno de estos? ${candidates.join(', ')} → añade "envFile" en .claude/worktree.json`
+      : `no existe "${envFile}" y no se encontró ningún fichero de entorno alternativo: puerto y BD no se detectarán`,
+  );
+}
 
 const env = loadProjectEnv(root, envFile);
 const portVars = config.portVars ?? detectPortVars(env);
