@@ -66,6 +66,11 @@ divergir.
 Si quieres una sola fuente de verdad también para la otra herramienta, usa `--link-agents`: reapunta
 `~/.agents/skills/<name>` a este repo (respaldando antes lo que hubiera).
 
+## Statusline y hooks
+
+`dotfiles/` versiona el statusline (ruta + rama + modelo + %contexto) y el hook `SessionStart`
+que inyecta el estado git real. Ver `dotfiles/README.md` para instalarlos en máquina nueva.
+
 ## Skills NO incluidas
 
 Las `peon-ping-*` (`peon-ping-config`, `peon-ping-log`, `peon-ping-toggle`, `peon-ping-use`) se
