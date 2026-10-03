@@ -1,7 +1,7 @@
 # dotfiles
 
 Statusline + hook de contexto git, versionados aquí para replicar el prompt de Claude Code en
-otra máquina (línea 1: ruta; línea 2: `(rama) [✗ si dirty] | Modelo [effort] | ctx:NN%`).
+otra máquina (línea 1: `→ ruta`; línea 2: `⎇ rama [✗ si dirty] │ Modelo  ◑ effort │ ctx [▓▓░░░░░░░░] NN%`).
 
 ## Instalar en máquina nueva
 
@@ -46,7 +46,9 @@ statusline nuevo.
 
 - `statusline-command.sh`: statusline. Lee `cwd`, `model.display_name`, `effort.level` y
   `context_window.used_percentage` del JSON que Claude Code pasa por stdin; añade rama git y
-  marca `✗` si el working tree está sucio.
+  marca `✗` si el working tree está sucio. Cada sección tiene un solo color (git cian, modelo azul
+  cielo); solo ctx cambia: verde < 60%, ámbar < 85%, rojo >= 85%. El icono de esfuerzo se llena
+  según el nivel (`◔` low, `◑` medium, `◕` high, `●` xhigh, `◉` max).
 - `hooks/git-context.sh`: hook `SessionStart`. Inyecta el estado real de git (rama, status,
   últimos 5 commits) al arrancar/resume/clear/compact, para que no quede obsoleto el snapshot
   del prompt si se cambia de rama a mitad de sesión.

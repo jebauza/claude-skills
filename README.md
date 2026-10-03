@@ -52,7 +52,7 @@ contrapartida es que son **copias**: si el proyecto original publica cambios, no
 
 ## Statusline y hooks
 
-`dotfiles/` versiona el statusline (ruta + rama + modelo + %contexto) y el hook `SessionStart`
+`dotfiles/` versiona el statusline (ruta + rama + modelo/esfuerzo + barra de contexto) y el hook `SessionStart`
 que inyecta el estado git real. Ver `dotfiles/README.md` para instalarlos en máquina nueva.
 
 ## Skills NO incluidas
